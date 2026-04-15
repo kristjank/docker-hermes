@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# hermes — wrapper around docker compose for the hermes-agent container.
+#
+# Usage:
+#   ./hermes <command> [args...]
+#
+# Run `./hermes help` for the full list.
+
+set -euo pipefail
+
+# Resolve script dir so `./hermes` works from anywhere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+COMPOSE=(docker compose)
+
+# --- colors (only if stdout is a TTY) ---
+if [ -t 1 ]; then
+    B=$'\033[1m'; DIM=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
+else
+    B=""; DIM=""; G=""; Y=""; R=""; N=""
+fi
+
+die()  { echo "${R}error:${N} $*" >&2; exit 1; }
+info() { echo "${DIM}==>${N} $*"; }
+ok()   { echo "${G}✓${N} $*"; }
+
+# --- preflight ---
+[ -f docker-compose.yml ] || die "docker-compose.yml not found (run from the docker-hermes dir)"
+[ -f .env ] || { info "no .env found — copying from .env.example"; cp .env.example .env; }
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+
+    # ---- agent (TUI) ----
+    open|agent|run)
+        # Interactive terminal UI. Exits cleanly when you Ctrl-D out.
+        exec "${COMPOSE[@]}" run --rm hermes "$@"
+        ;;
+
+    shell|sh|bash)
+        # Root-less shell inside a fresh container (for poking around).
+        exec "${COMPOSE[@]}" run --rm --entrypoint /bin/bash hermes
+        ;;
+
+    # ---- gateway (messaging listener) ----
+    start|up)
+        "${COMPOSE[@]}" up -d gateway
+        ok "gateway started"
+        "${COMPOSE[@]}" ps gateway
+        ;;
+
+    stop|down)
+        "${COMPOSE[@]}" stop gateway
+        ok "gateway stopped"
+        ;;
+
+    restart)
+        "${COMPOSE[@]}" restart gateway
+        ok "gateway restarted"
+        ;;
+
+    status|ps)
+        "${COMPOSE[@]}" ps
+        ;;
+
+    logs|log|tail)
+        # Default: follow. Pass `--no-follow` or a line count for one-shot.
+        if [ $# -eq 0 ]; then
+            exec "${COMPOSE[@]}" logs -f gateway
+        else
+            exec "${COMPOSE[@]}" logs "$@" gateway
+        fi
+        ;;
+
+    # ---- config ----
+    setup)
+        # First-time or re-run config wizard. Writes to the persistent volume.
+        exec "${COMPOSE[@]}" run --rm hermes setup
+        ;;
+
+    gateway-setup|gsetup)
+        exec "${COMPOSE[@]}" run --rm hermes gateway setup
+        ;;
+
+    config)
+        exec "${COMPOSE[@]}" run --rm hermes config "$@"
+        ;;
+
+    edit)
+        # Edit hermes's config.yaml (model, tools, personalities — not keys).
+        exec "${COMPOSE[@]}" run --rm hermes config edit
+        ;;
+
+    env|keys)
+        # Edit the volume's .env where API keys live. Uses a disposable alpine
+        # container with vi so we don't depend on the hermes image having an
+        # editor. Restarts the gateway afterwards so changes take effect.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        docker run --rm -it -v "${volume}:/h" alpine sh -c 'vi /h/.env'
+        if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
+            info "restarting gateway to pick up new env values"
+            "${COMPOSE[@]}" restart gateway
+        fi
+        ;;
+
+    cat-env|show-env)
+        # Print the volume's .env with values redacted — useful for verifying
+        # which keys exist without leaking values to a transcript.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        exec docker run --rm -v "${volume}:/h" alpine \
+            sh -c "sed -E 's/^([A-Z_]+)=.+/\\1=<redacted>/' /h/.env"
+        ;;
+
+    # ---- lifecycle ----
+    build)
+        "${COMPOSE[@]}" build "$@"
+        ok "image built"
+        ;;
+
+    rebuild)
+        "${COMPOSE[@]}" build --no-cache "$@"
+        ok "image rebuilt from scratch"
+        ;;
+
+    update|pull)
+        # Re-clone hermes-agent at current HERMES_REF without touching the volume.
+        info "rebuilding with --no-cache to pull latest hermes-agent"
+        "${COMPOSE[@]}" build --no-cache
+        ok "updated (your ~/.hermes volume is untouched)"
+        ;;
+
+    clean)
+        # Stop everything but keep the volume.
+        "${COMPOSE[@]}" down
+        ok "containers removed (volume kept)"
+        ;;
+
+    nuke)
+        # Delete containers AND the hermes-home volume. Destructive.
+        echo -n "${Y}This deletes the hermes-home volume (all skills/config). Type 'yes' to confirm:${N} "
+        read -r ans
+        [ "$ans" = "yes" ] || { info "aborted"; exit 1; }
+        "${COMPOSE[@]}" down -v
+        ok "all gone"
+        ;;
+
+    # ---- help ----
+    help|-h|--help|"")
+        cat <<EOF
+${B}hermes${N} — docker-compose wrapper for hermes-agent
+
+${B}agent:${N}
+  ${G}open${N}              launch the interactive terminal UI
+  ${G}shell${N}             bash shell inside a one-off container
+  ${G}config${N} [args]     run \`hermes config …\` in a one-off container
+  ${G}edit${N}              open config.yaml (model/tools/personalities)
+  ${G}env${N}               edit the volume's .env (API keys, tokens)
+  ${G}cat-env${N}           list which keys exist (values redacted)
+  ${G}setup${N}             run the first-time setup wizard
+  ${G}gsetup${N}            run the gateway-specific setup wizard
+
+${B}gateway (background messaging listener):${N}
+  ${G}start${N}             bring gateway up in background
+  ${G}stop${N}              stop the gateway
+  ${G}restart${N}           restart the gateway
+  ${G}status${N}            show running services
+  ${G}logs${N} [args]       follow gateway logs (pass extra args verbatim)
+
+${B}image / volume:${N}
+  ${G}build${N}             build the image (cached)
+  ${G}rebuild${N}           build with --no-cache
+  ${G}update${N}            re-clone latest hermes-agent and rebuild
+  ${G}clean${N}             remove containers (keep the hermes-home volume)
+  ${G}nuke${N}              remove containers AND the volume (destructive)
+
+Run ${DIM}./hermes <command> --help${N} for docker compose's help on a given verb.
+EOF
+        ;;
+
+    *)
+        die "unknown command: $cmd  (try: ./hermes help)"
+        ;;
+esac

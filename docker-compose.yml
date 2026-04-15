@@ -1,0 +1,43 @@
+services:
+  # Interactive terminal UI — run with:  docker compose run --rm hermes
+  hermes:
+    build:
+      context: .
+      args:
+        # Pin to a commit SHA for reproducibility; "main" tracks latest.
+        HERMES_REF: main
+        # Set to 0 to skip Playwright chromium (saves ~400MB, disables browser tools).
+        INSTALL_PLAYWRIGHT: "1"
+    image: hermes-agent:latest
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    volumes:
+      - hermes-home:/home/hermes/.hermes
+      # - ./workspace:/home/hermes/workspace
+
+  # Messaging gateway — Telegram/Discord/Slack/etc. Long-running.
+  # First-time config:  docker compose run --rm hermes gateway setup
+  # Start service:      docker compose up -d gateway
+  # Logs:               docker compose logs -f gateway
+  gateway:
+    image: hermes-agent:latest
+    command: ["gateway"]
+    depends_on:
+      - hermes          # ensures the image is built via the `hermes` service
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    volumes:
+      - hermes-home:/home/hermes/.hermes
+    # Uncomment if a platform needs inbound webhooks (Telegram webhook mode,
+    # Slack HTTP mode, etc.). Most default transports don't: Telegram polling,
+    # Discord websocket, Slack Socket Mode are all outbound-only.
+    # ports:
+    #   - "8080:8080"
+
+volumes:
+  hermes-home:

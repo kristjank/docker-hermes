@@ -1,0 +1,26 @@
+# --- Secrets / local config ---
+# .env may accumulate tokens if you use it for boot-time overrides; never commit.
+.env
+.env.local
+*.env.real
+
+# --- Backups / state dumps ---
+# If you add ./hermes backup or similar, tarballs land here.
+hermes-backup-*.tar.gz
+backups/
+
+# --- Optional mounted workspace ---
+# docker-compose.yml has a commented bind-mount to ./workspace.
+workspace/
+
+# --- macOS / editor noise ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Local overrides ---
+# Standard compose override pattern for per-dev tweaks.
+docker-compose.override.yml
