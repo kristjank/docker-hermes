@@ -25,20 +25,30 @@ die()  { echo "${R}error:${N} $*" >&2; exit 1; }
 info() { echo "${DIM}==>${N} $*"; }
 ok()   { echo "${G}✓${N} $*"; }
 
+# Name of the hermes-home volume (derived from compose project name).
+volume_name() {
+    echo "$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+}
+
+# Read the currently-active profile name from the volume (set by
+# `hermes profile use <name>`). Returns "default" if no active_profile
+# file exists — i.e. hermes is using the default profile at the volume root.
+active_profile_name() {
+    docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine \
+        sh -c 'cat /h/active_profile 2>/dev/null || echo default' 2>/dev/null \
+        | tr -d '[:space:]'
+}
+
 # Resolve a profile name to its SOUL.md path inside the volume.
-# "default" or empty → /h/SOUL.md; otherwise /h/profiles/<name>/SOUL.md
+# Empty arg → active profile; "default" → /h/SOUL.md;
+# otherwise /h/profiles/<name>/SOUL.md
 soul_path_in_volume() {
-    local profile="${1:-default}"
+    local profile="${1:-$(active_profile_name)}"
     if [ "$profile" = "default" ] || [ -z "$profile" ]; then
         echo "/h/SOUL.md"
     else
         echo "/h/profiles/${profile}/SOUL.md"
     fi
-}
-
-# Name of the hermes-home volume (derived from compose project name).
-volume_name() {
-    echo "$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
 }
 
 # Restart gateway if it's currently running — soul/config/env changes
@@ -188,6 +198,15 @@ case "$cmd" in
     profile|profiles)
         # Forward to `hermes profile …` for list/create/use/delete/etc.
         # e.g. ./hermes profile list   ./hermes profile create researcher
+        #
+        # `profile delete` prompts for the name via stdin, which doesn't
+        # flow cleanly through `docker compose run` in all environments.
+        # Nudge users to pass --yes explicitly when deleting.
+        if [ "${1:-}" = "delete" ] && ! printf '%s\n' "$@" | grep -qE '^--yes$|^-y$'; then
+            info "\`profile delete\` needs --yes when run via the wrapper"
+            info "  re-run: ./hermes profile delete $2 --yes"
+            exit 1
+        fi
         exec "${COMPOSE[@]}" run --rm hermes profile "$@"
         ;;
 
@@ -199,20 +218,20 @@ case "$cmd" in
         sub="${1:-edit}"; shift || true
         case "$sub" in
             edit|"")
-                profile="${1:-default}"
+                profile="${1:-$(active_profile_name)}"
                 path="$(soul_path_in_volume "$profile")"
                 docker run --rm -it -v "$(volume_name):/h" alpine \
                     sh -c "mkdir -p \$(dirname ${path}) && vi ${path}"
                 maybe_restart_gateway
                 ;;
             show|cat)
-                profile="${1:-default}"
+                profile="${1:-$(active_profile_name)}"
                 path="$(soul_path_in_volume "$profile")"
                 exec docker run --rm -v "$(volume_name):/h" alpine cat "${path}"
                 ;;
             import)
                 file="${1:-}"
-                profile="${2:-default}"
+                profile="${2:-$(active_profile_name)}"
                 [ -z "$file" ] && die "usage: ./hermes soul import <file> [profile]"
                 [ -f "$file" ] || die "no such file: $file"
                 path="$(soul_path_in_volume "$profile")"
@@ -223,7 +242,7 @@ case "$cmd" in
                 ;;
             export)
                 file="${1:-}"
-                profile="${2:-default}"
+                profile="${2:-$(active_profile_name)}"
                 [ -z "$file" ] && die "usage: ./hermes soul export <file> [profile]"
                 path="$(soul_path_in_volume "$profile")"
                 docker run --rm -v "$(volume_name):/h" alpine cat "${path}" > "$file" \
@@ -288,7 +307,7 @@ ${B}agent:${N}
 
 ${B}profiles / souls (multi-persona):${N}
   ${G}profile${N} [args]     forward to \`hermes profile …\` (list/create/use/…)
-  ${G}soul${N} [profile]     edit SOUL.md (default profile if omitted)
+  ${G}soul${N} [profile]     edit SOUL.md (active profile if omitted)
   ${G}soul show${N} [prof]   cat SOUL.md to stdout
   ${G}soul import${N} <f> [prof]   replace SOUL.md from host file
   ${G}soul export${N} <f> [prof]   save SOUL.md to host file
