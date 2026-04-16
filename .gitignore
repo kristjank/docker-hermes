@@ -13,6 +13,11 @@ backups/
 # docker-compose.yml has a commented bind-mount to ./workspace.
 workspace/
 
+# --- Private souls (persona prompts) ---
+# Kept locally for `./hermes soul import souls/<name>.md <profile>` but never
+# committed, since personas may encode private context or instructions.
+souls/
+
 # --- macOS / editor noise ---
 .DS_Store
 .idea/
