@@ -75,7 +75,7 @@ case "$cmd" in
         # the id that `hermes --resume` expects.
         volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
         limit="${1:-15}"
-        docker run --rm -v "${volume}:/h" alpine sh -c "
+        docker run --rm --user 1000:1000 -v "${volume}:/h" alpine sh -c "
             ls -t /h/sessions/ 2>/dev/null \
               | grep -E '^session_[0-9_a-f]+\\.json$' \
               | head -${limit} \
@@ -93,7 +93,7 @@ case "$cmd" in
         # With an id, resumes that specific session.
         volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
         if [ $# -eq 0 ]; then
-            sid="$(docker run --rm -v "${volume}:/h" alpine sh -c "
+            sid="$(docker run --rm --user 1000:1000 -v "${volume}:/h" alpine sh -c "
                 ls -t /h/sessions/ 2>/dev/null \
                   | grep -E '^session_[0-9_a-f]+\\.json$' \
                   | head -1 \
@@ -157,7 +157,7 @@ case "$cmd" in
         # Uses disposable alpine+vi against the volume so we don't depend on
         # the hermes image having an editor installed.
         volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
-        docker run --rm -it -v "${volume}:/h" alpine sh -c 'vi /h/config.yaml'
+        docker run --rm -it --user 1000:1000 -v "${volume}:/h" alpine sh -c 'vi /h/config.yaml'
         if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
             info "restarting gateway to pick up config changes"
             "${COMPOSE[@]}" restart gateway
@@ -169,7 +169,7 @@ case "$cmd" in
         # container with vi so we don't depend on the hermes image having an
         # editor. Restarts the gateway afterwards so changes take effect.
         volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
-        docker run --rm -it -v "${volume}:/h" alpine sh -c 'vi /h/.env'
+        docker run --rm -it --user 1000:1000 -v "${volume}:/h" alpine sh -c 'vi /h/.env'
         if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
             info "restarting gateway to pick up new env values"
             "${COMPOSE[@]}" restart gateway
@@ -180,7 +180,7 @@ case "$cmd" in
         # Print the volume's .env with values redacted — useful for verifying
         # which keys exist without leaking values to a transcript.
         volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
-        exec docker run --rm -v "${volume}:/h" alpine \
+        exec docker run --rm --user 1000:1000 -v "${volume}:/h" alpine \
             sh -c "sed -E 's/^([A-Z_]+)=.+/\\1=<redacted>/' /h/.env"
         ;;
 
@@ -201,14 +201,14 @@ case "$cmd" in
             edit|"")
                 profile="${1:-default}"
                 path="$(soul_path_in_volume "$profile")"
-                docker run --rm -it -v "$(volume_name):/h" alpine \
+                docker run --rm -it --user 1000:1000 -v "$(volume_name):/h" alpine \
                     sh -c "mkdir -p \$(dirname ${path}) && vi ${path}"
                 maybe_restart_gateway
                 ;;
             show|cat)
                 profile="${1:-default}"
                 path="$(soul_path_in_volume "$profile")"
-                exec docker run --rm -v "$(volume_name):/h" alpine cat "${path}"
+                exec docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine cat "${path}"
                 ;;
             import)
                 file="${1:-}"
@@ -216,7 +216,7 @@ case "$cmd" in
                 [ -z "$file" ] && die "usage: ./hermes soul import <file> [profile]"
                 [ -f "$file" ] || die "no such file: $file"
                 path="$(soul_path_in_volume "$profile")"
-                docker run --rm -i -v "$(volume_name):/h" alpine \
+                docker run --rm -i --user 1000:1000 -v "$(volume_name):/h" alpine \
                     sh -c "mkdir -p \$(dirname ${path}) && cat > ${path}" < "$file"
                 ok "imported → ${path} (profile: ${profile})"
                 maybe_restart_gateway
@@ -226,7 +226,7 @@ case "$cmd" in
                 profile="${2:-default}"
                 [ -z "$file" ] && die "usage: ./hermes soul export <file> [profile]"
                 path="$(soul_path_in_volume "$profile")"
-                docker run --rm -v "$(volume_name):/h" alpine cat "${path}" > "$file" \
+                docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine cat "${path}" > "$file" \
                     || die "profile '${profile}' has no SOUL.md yet"
                 ok "exported ${path} → ${file}"
                 ;;
