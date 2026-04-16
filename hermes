@@ -44,6 +44,45 @@ case "$cmd" in
         exec "${COMPOSE[@]}" run --rm --entrypoint /bin/bash hermes
         ;;
 
+    sessions|ls-sessions)
+        # List recent sessions from the volume. Sessions are stored as
+        # ~/.hermes/sessions/session_<id>.json — strip prefix/suffix to get
+        # the id that `hermes --resume` expects.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        limit="${1:-15}"
+        docker run --rm -v "${volume}:/h" alpine sh -c "
+            ls -t /h/sessions/ 2>/dev/null \
+              | grep -E '^session_[0-9_a-f]+\\.json$' \
+              | head -${limit} \
+              | sed 's/^session_//; s/\\.json\$//' \
+              | awk -F_ '{
+                  date=substr(\$1,1,4)\"-\"substr(\$1,5,2)\"-\"substr(\$1,7,2);
+                  time=substr(\$2,1,2)\":\"substr(\$2,3,2)\":\"substr(\$2,5,2);
+                  printf \"  %s %s  %s\\n\", date, time, \$0
+                }'
+        "
+        ;;
+
+    resume)
+        # Resume a hermes session. With no arg, picks the most recent one.
+        # With an id, resumes that specific session.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        if [ $# -eq 0 ]; then
+            sid="$(docker run --rm -v "${volume}:/h" alpine sh -c "
+                ls -t /h/sessions/ 2>/dev/null \
+                  | grep -E '^session_[0-9_a-f]+\\.json$' \
+                  | head -1 \
+                  | sed 's/^session_//; s/\\.json\$//'
+            ")"
+            [ -z "$sid" ] && die "no sessions found in volume"
+            info "resuming latest: $sid"
+        else
+            sid="$1"
+            shift
+        fi
+        exec "${COMPOSE[@]}" run --rm hermes --resume "$sid" "$@"
+        ;;
+
     # ---- gateway (messaging listener) ----
     start|up)
         "${COMPOSE[@]}" up -d gateway
@@ -160,6 +199,8 @@ ${B}hermes${N} — docker-compose wrapper for hermes-agent
 
 ${B}agent:${N}
   ${G}open${N}              launch the interactive terminal UI
+  ${G}resume${N} [id]       resume a session (no id → most recent)
+  ${G}sessions${N} [N]      list the N most recent sessions (default 15)
   ${G}shell${N}             bash shell inside a one-off container
   ${G}config${N} [args]     run \`hermes config …\` in a one-off container
   ${G}edit${N}              open config.yaml (model/tools/personalities)
