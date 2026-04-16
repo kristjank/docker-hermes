@@ -225,6 +225,17 @@ A soul is just a Markdown file hermes reads at session start as part of the syst
 
 **Import invariant:** `soul import` only replaces the target profile's `SOUL.md`. Its `config.yaml` (model, tools) and `.env` (keys) are untouched — a profile's bindings survive any soul swap. The gateway auto-restarts after an import so long-running messaging picks up the new persona.
 
+**Where to keep host-side soul files:** the convention is a top-level `./souls/` directory in this repo — gitignored (personas may encode private context), so your library of persona prompts stays local. Typical workflow:
+
+```bash
+mkdir -p souls
+$EDITOR souls/phd-researcher.md
+./hermes profile create researcher
+./hermes soul import souls/phd-researcher.md researcher
+./hermes profile use researcher
+./hermes open
+```
+
 ### Running different profiles in parallel
 
 Each profile has its own gateway state and its own sessions dir, so you can run different personalities against different messaging accounts. For example, `coding-buddy` answering Discord while `researcher` answers Telegram — configure each profile with the relevant bot token in its `.env`, then use `hermes profile use <name>` + `./hermes start` to bring up that profile's gateway.
