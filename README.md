@@ -13,7 +13,8 @@ Containerized [NousResearch/hermes-agent](https://github.com/NousResearch/hermes
 
 ## What you get
 
-- **Two services sharing one volume.** An interactive TUI (`hermes` service) and a long-running messaging listener (`gateway` service) that both see the same config, skills, and conversation history.
+- **Two services sharing one volume and one workspace.** An interactive TUI (`hermes` service) and a long-running messaging listener (`gateway` service) that both see the same config, skills, conversation history, and `./workspace/` directory.
+- **Bidirectional file I/O via `./workspace/`.** Anything hermes writes (PDFs, reports, downloads) lands in `./workspace/` on your host. Anything you drop into `./workspace/` is visible inside the agent at `/home/hermes/workspace`.
 - **Everything in one volume.** API keys, hermes config, skills, sessions, and memories live in a named Docker volume. Rebuild the image, reinstall your laptop, whatever — the volume carries your state forward.
 - **One wrapper script.** `./hermes` is a thin bash layer over `docker compose` with verbs like `open` / `start` / `stop` / `env` / `logs` / `backup`.
 - **No secrets on the host filesystem.** The host `.env` is intentionally empty; credentials live inside the persistent volume.
@@ -162,6 +163,32 @@ Hermes can listen on Telegram, Discord, Slack, WhatsApp, Signal, and Email from 
 - **Webhook modes (Telegram webhook, Slack HTTP mode, WhatsApp Business)** — need inbound HTTPS. Uncomment the `ports:` block in `docker-compose.yml` and put a reverse proxy (Caddy, Cloudflare Tunnel, ngrok) in front.
 
 Stop/start the gateway at any time with `./hermes stop` / `./hermes start`. Your configuration persists in the volume.
+
+---
+
+## File I/O — the `./workspace/` directory
+
+The `hermes` and `gateway` services run with `working_dir: /home/hermes/workspace`, which is bind-mounted from `./workspace/` in the repo. This is where you exchange files with the agent.
+
+```bash
+# Drop a file for hermes to read
+cp ~/Downloads/contract.pdf ./workspace/
+./hermes open
+# In the TUI:  "read workspace/contract.pdf and summarize it"
+
+# Pick up a file hermes generated
+ls ./workspace/
+```
+
+Why it's mounted there:
+
+- Hermes's `write_file` tool, shell commands, and tool outputs default to the current working directory.
+- `./workspace/` is both persistent (lives on your host filesystem, not in an ephemeral container) and **directly accessible** from your host without `docker cp` or volume-extraction commands.
+- The messaging gateway shares the same workspace, so files generated from a Telegram/Discord chat land in the same place.
+
+The workspace directory is **gitignored** — nothing in it ever gets committed. Treat it like `~/Downloads`: disposable working scratch space that's yours to organize.
+
+If you want hermes to work on your actual projects, either copy files in, or add additional bind mounts under `volumes:` in `docker-compose.yml`.
 
 ---
 
