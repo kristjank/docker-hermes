@@ -49,28 +49,37 @@ The wizard writes your API key into the volume at `~/.hermes/.env` (inside the c
 
 ```
 agent:
-  open              launch the interactive terminal UI
-  shell             bash shell inside a one-off container
-  config [args]     run `hermes config …` in a one-off container
-  edit              open config.yaml (model/tools/personalities)
-  env               edit the volume's .env (API keys, tokens)
-  cat-env           list which keys exist (values redacted)
-  setup             run the first-time setup wizard
-  gsetup            run the gateway-specific setup wizard
+  open                         launch the interactive terminal UI
+  resume [id]                  resume a session (no id → most recent)
+  sessions [N]                 list the N most recent sessions (default 15)
+  shell                        bash shell inside a one-off container
+  config [args]                run `hermes config …` in a one-off container
+  edit                         open config.yaml (model/tools/personalities)
+  env                          edit the volume's .env (API keys, tokens)
+  cat-env                      list which keys exist (values redacted)
+  setup                        run the first-time setup wizard
+  gsetup                       run the gateway-specific setup wizard
+
+profiles / souls (multi-persona):
+  profile [args]               forward to `hermes profile …` (list/create/use/…)
+  soul [profile]               edit SOUL.md (default profile if omitted)
+  soul show [profile]          cat SOUL.md to stdout
+  soul import <file> [prof]    replace SOUL.md from host file
+  soul export <file> [prof]    save SOUL.md to host file
 
 gateway (background messaging listener):
-  start             bring gateway up in background
-  stop              stop the gateway
-  restart           restart the gateway
-  status            show running services
-  logs [args]       follow gateway logs (pass extra args verbatim)
+  start                        bring gateway up in background
+  stop                         stop the gateway
+  restart                      restart the gateway
+  status                       show running services
+  logs [args]                  follow gateway logs (pass extra args verbatim)
 
 image / volume:
-  build             build the image (cached)
-  rebuild           build with --no-cache
-  update            re-clone latest hermes-agent and rebuild
-  clean             remove containers (keep the hermes-home volume)
-  nuke              remove containers AND the volume (destructive)
+  build                        build the image (cached)
+  rebuild                      build with --no-cache
+  update                       re-clone latest hermes-agent and rebuild
+  clean                        remove containers (keep the hermes-home volume)
+  nuke                         remove containers AND the volume (destructive)
 ```
 
 Invoke as `./hermes <command>`. Any extra args after the command are forwarded verbatim to `docker compose`.
@@ -163,6 +172,62 @@ Hermes can listen on Telegram, Discord, Slack, WhatsApp, Signal, and Email from 
 - **Webhook modes (Telegram webhook, Slack HTTP mode, WhatsApp Business)** — need inbound HTTPS. Uncomment the `ports:` block in `docker-compose.yml` and put a reverse proxy (Caddy, Cloudflare Tunnel, ngrok) in front.
 
 Stop/start the gateway at any time with `./hermes stop` / `./hermes start`. Your configuration persists in the volume.
+
+---
+
+## Profiles and souls (multiple personas)
+
+Hermes supports multiple **profiles** — fully isolated state trees each with their own model config, API keys, skills, memory, sessions, and persona prompt. The persona prompt lives in `SOUL.md` inside the profile directory.
+
+```
+~/.hermes/
+├── SOUL.md                    ← default profile's persona
+├── config.yaml                ← default profile's model + tools
+├── .env                       ← default profile's keys
+└── profiles/
+    ├── researcher/
+    │   ├── SOUL.md            ← researcher's persona
+    │   ├── config.yaml        ← could use a different model
+    │   └── .env               ← could use different keys
+    └── coding-buddy/
+        └── SOUL.md
+```
+
+### Profile lifecycle
+
+```bash
+./hermes profile list                            # see what's there
+./hermes profile create researcher               # new profile (inherits default config)
+./hermes profile use researcher                  # set sticky default
+./hermes profile show researcher                 # details (model, skills, gateway status)
+./hermes profile rename researcher phd-helper
+./hermes profile delete researcher
+```
+
+Everything after `./hermes profile` is forwarded to `hermes profile …`, so any upstream subcommand works.
+
+### Managing souls
+
+A soul is just a Markdown file hermes reads at session start as part of the system prompt. Edit, import, export:
+
+```bash
+./hermes soul                                    # edit default profile's SOUL.md in vi
+./hermes soul researcher                         # edit a named profile's SOUL.md
+
+./hermes soul show                               # cat default's SOUL.md
+./hermes soul show researcher                    # cat researcher's SOUL.md
+
+./hermes soul import ~/souls/scholar.md                    # → default profile
+./hermes soul import ~/souls/scholar.md researcher         # → researcher profile
+./hermes soul export ~/souls/backup-default.md             # save default's soul
+./hermes soul export ~/souls/backup-researcher.md researcher
+```
+
+**Import invariant:** `soul import` only replaces the target profile's `SOUL.md`. Its `config.yaml` (model, tools) and `.env` (keys) are untouched — a profile's bindings survive any soul swap. The gateway auto-restarts after an import so long-running messaging picks up the new persona.
+
+### Running different profiles in parallel
+
+Each profile has its own gateway state and its own sessions dir, so you can run different personalities against different messaging accounts. For example, `coding-buddy` answering Discord while `researcher` answers Telegram — configure each profile with the relevant bot token in its `.env`, then use `hermes profile use <name>` + `./hermes start` to bring up that profile's gateway.
 
 ---
 
