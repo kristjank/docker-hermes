@@ -11,8 +11,6 @@ services:
     image: hermes-agent:latest
     stdin_open: true
     tty: true
-    env_file:
-      - .env
     volumes:
       - hermes-home:/home/hermes/.hermes
       # - ./workspace:/home/hermes/workspace
@@ -29,8 +27,6 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
-    env_file:
-      - .env
     volumes:
       - hermes-home:/home/hermes/.hermes
     # Uncomment if a platform needs inbound webhooks (Telegram webhook mode,
