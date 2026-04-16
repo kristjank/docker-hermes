@@ -27,7 +27,6 @@ ok()   { echo "${G}✓${N} $*"; }
 
 # --- preflight ---
 [ -f docker-compose.yml ] || die "docker-compose.yml not found (run from the docker-hermes dir)"
-[ -f .env ] || { info "no .env found — copying from .env.example"; cp .env.example .env; }
 
 cmd="${1:-help}"
 shift || true
@@ -91,7 +90,14 @@ case "$cmd" in
 
     edit)
         # Edit hermes's config.yaml (model, tools, personalities — not keys).
-        exec "${COMPOSE[@]}" run --rm hermes config edit
+        # Uses disposable alpine+vi against the volume so we don't depend on
+        # the hermes image having an editor installed.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        docker run --rm -it -v "${volume}:/h" alpine sh -c 'vi /h/config.yaml'
+        if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
+            info "restarting gateway to pick up config changes"
+            "${COMPOSE[@]}" restart gateway
+        fi
         ;;
 
     env|keys)
