@@ -251,7 +251,12 @@ case "$cmd" in
         # Re-clone hermes-agent at current HERMES_REF without touching the volume.
         info "rebuilding with --no-cache to pull latest hermes-agent"
         "${COMPOSE[@]}" build --no-cache
-        ok "updated (your ~/.hermes volume is untouched)"
+        # Clear hermes's cached "N commits behind" result — it's memoized in
+        # the volume and will otherwise keep reporting the pre-update value
+        # until its TTL expires. The cache is guaranteed stale after a rebuild.
+        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+        docker run --rm -v "${volume}:/h" alpine rm -f /h/.update_check 2>/dev/null || true
+        ok "updated (your ~/.hermes volume is untouched; update cache cleared)"
         ;;
 
     clean)
