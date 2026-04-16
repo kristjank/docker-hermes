@@ -25,6 +25,31 @@ die()  { echo "${R}error:${N} $*" >&2; exit 1; }
 info() { echo "${DIM}==>${N} $*"; }
 ok()   { echo "${G}✓${N} $*"; }
 
+# Resolve a profile name to its SOUL.md path inside the volume.
+# "default" or empty → /h/SOUL.md; otherwise /h/profiles/<name>/SOUL.md
+soul_path_in_volume() {
+    local profile="${1:-default}"
+    if [ "$profile" = "default" ] || [ -z "$profile" ]; then
+        echo "/h/SOUL.md"
+    else
+        echo "/h/profiles/${profile}/SOUL.md"
+    fi
+}
+
+# Name of the hermes-home volume (derived from compose project name).
+volume_name() {
+    echo "$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
+}
+
+# Restart gateway if it's currently running — soul/config/env changes
+# need a session restart to take effect for long-running messaging.
+maybe_restart_gateway() {
+    if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
+        info "restarting gateway to pick up changes"
+        "${COMPOSE[@]}" restart gateway >/dev/null
+    fi
+}
+
 # --- preflight ---
 [ -f docker-compose.yml ] || die "docker-compose.yml not found (run from the docker-hermes dir)"
 
@@ -159,6 +184,58 @@ case "$cmd" in
             sh -c "sed -E 's/^([A-Z_]+)=.+/\\1=<redacted>/' /h/.env"
         ;;
 
+    # ---- profiles ----
+    profile|profiles)
+        # Forward to `hermes profile …` for list/create/use/delete/etc.
+        # e.g. ./hermes profile list   ./hermes profile create researcher
+        exec "${COMPOSE[@]}" run --rm hermes profile "$@"
+        ;;
+
+    # ---- souls (per-profile SOUL.md) ----
+    soul|souls)
+        # Sub-dispatch on the next arg. SOUL.md is the profile-level persona
+        # prompt. Each profile has its own; this command only touches that
+        # one file, leaving the profile's config.yaml and .env intact.
+        sub="${1:-edit}"; shift || true
+        case "$sub" in
+            edit|"")
+                profile="${1:-default}"
+                path="$(soul_path_in_volume "$profile")"
+                docker run --rm -it -v "$(volume_name):/h" alpine \
+                    sh -c "mkdir -p \$(dirname ${path}) && vi ${path}"
+                maybe_restart_gateway
+                ;;
+            show|cat)
+                profile="${1:-default}"
+                path="$(soul_path_in_volume "$profile")"
+                exec docker run --rm -v "$(volume_name):/h" alpine cat "${path}"
+                ;;
+            import)
+                file="${1:-}"
+                profile="${2:-default}"
+                [ -z "$file" ] && die "usage: ./hermes soul import <file> [profile]"
+                [ -f "$file" ] || die "no such file: $file"
+                path="$(soul_path_in_volume "$profile")"
+                docker run --rm -i -v "$(volume_name):/h" alpine \
+                    sh -c "mkdir -p \$(dirname ${path}) && cat > ${path}" < "$file"
+                ok "imported → ${path} (profile: ${profile})"
+                maybe_restart_gateway
+                ;;
+            export)
+                file="${1:-}"
+                profile="${2:-default}"
+                [ -z "$file" ] && die "usage: ./hermes soul export <file> [profile]"
+                path="$(soul_path_in_volume "$profile")"
+                docker run --rm -v "$(volume_name):/h" alpine cat "${path}" > "$file" \
+                    || die "profile '${profile}' has no SOUL.md yet"
+                ok "exported ${path} → ${file}"
+                ;;
+            *)
+                die "unknown soul subcommand: $sub  (try: edit, show, import, export)"
+                ;;
+        esac
+        ;;
+
     # ---- lifecycle ----
     build)
         "${COMPOSE[@]}" build "$@"
@@ -208,6 +285,13 @@ ${B}agent:${N}
   ${G}cat-env${N}           list which keys exist (values redacted)
   ${G}setup${N}             run the first-time setup wizard
   ${G}gsetup${N}            run the gateway-specific setup wizard
+
+${B}profiles / souls (multi-persona):${N}
+  ${G}profile${N} [args]     forward to \`hermes profile …\` (list/create/use/…)
+  ${G}soul${N} [profile]     edit SOUL.md (default profile if omitted)
+  ${G}soul show${N} [prof]   cat SOUL.md to stdout
+  ${G}soul import${N} <f> [prof]   replace SOUL.md from host file
+  ${G}soul export${N} <f> [prof]   save SOUL.md to host file
 
 ${B}gateway (background messaging listener):${N}
   ${G}start${N}             bring gateway up in background
