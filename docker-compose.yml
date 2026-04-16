@@ -11,9 +11,10 @@ services:
     image: hermes-agent:latest
     stdin_open: true
     tty: true
+    working_dir: /home/hermes/workspace
     volumes:
       - hermes-home:/home/hermes/.hermes
-      # - ./workspace:/home/hermes/workspace
+      - ./workspace:/home/hermes/workspace
 
   # Messaging gateway — Telegram/Discord/Slack/etc. Long-running.
   # First-time config:  docker compose run --rm hermes gateway setup
@@ -27,8 +28,10 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
+    working_dir: /home/hermes/workspace
     volumes:
       - hermes-home:/home/hermes/.hermes
+      - ./workspace:/home/hermes/workspace
     # Uncomment if a platform needs inbound webhooks (Telegram webhook mode,
     # Slack HTTP mode, etc.). Most default transports don't: Telegram polling,
     # Discord websocket, Slack Socket Mode are all outbound-only.
