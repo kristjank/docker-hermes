@@ -60,6 +60,38 @@ maybe_restart_gateway() {
     fi
 }
 
+# Point a profile's terminal.cwd at the bind-mounted workspace so generated
+# files (PDFs, reports, downloads) land on the host at ./workspace/<profile>/
+# instead of inside the volume at /h/profiles/<profile>/.
+# Also creates the host-side directory and restarts the gateway if running.
+setup_profile_workspace() {
+    local profile="${1:-$(active_profile_name)}"
+    [ -z "$profile" ] && die "no profile given and no active profile set"
+
+    local container_path="/home/hermes/workspace/${profile}"
+    local config_path
+    if [ "$profile" = "default" ]; then
+        config_path="/h/config.yaml"
+    else
+        config_path="/h/profiles/${profile}/config.yaml"
+    fi
+
+    # Create the host side of the bind mount first.
+    mkdir -p "${SCRIPT_DIR}/workspace/${profile}"
+
+    # Patch terminal.cwd in the profile's config.yaml.
+    docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine sh -c "
+        if [ ! -f ${config_path} ]; then
+            echo 'profile ${profile} has no config.yaml yet — run \`./hermes profile create ${profile} --clone\` or \`./hermes setup\` first' >&2
+            exit 1
+        fi
+        sed -i 's|^  cwd:.*|  cwd: ${container_path}|' ${config_path}
+    " || return 1
+
+    ok "profile '${profile}' → ./workspace/${profile}/ (on host) ↔ ${container_path} (in container)"
+    maybe_restart_gateway
+}
+
 # --- preflight ---
 [ -f docker-compose.yml ] || die "docker-compose.yml not found (run from the docker-hermes dir)"
 
@@ -207,6 +239,30 @@ case "$cmd" in
             info "  re-run: ./hermes profile delete $2 --yes"
             exit 1
         fi
+        # `profile workspace [name]` — local extension: wires a profile's
+        # terminal.cwd to the host-bound ./workspace/<name>/ directory so
+        # generated files (PDFs, reports, downloads) land on the host.
+        if [ "${1:-}" = "workspace" ]; then
+            shift
+            setup_profile_workspace "${1:-}"
+            exit 0
+        fi
+        # `profile create <name>` — after hermes finishes creating the profile,
+        # auto-wire its workspace to ./workspace/<name>/ so day-one writes
+        # land on the host instead of inside the volume.
+        if [ "${1:-}" = "create" ]; then
+            "${COMPOSE[@]}" run --rm hermes profile "$@"
+            rc=$?
+            if [ $rc -eq 0 ]; then
+                # Last non-flag argument is the profile name
+                new_name=""
+                for arg in "$@"; do
+                    case "$arg" in --*) ;; *) new_name="$arg" ;; esac
+                done
+                [ -n "$new_name" ] && [ "$new_name" != "create" ] && setup_profile_workspace "$new_name"
+            fi
+            exit $rc
+        fi
         exec "${COMPOSE[@]}" run --rm hermes profile "$@"
         ;;
 
@@ -312,6 +368,7 @@ ${B}agent:${N}
 
 ${B}profiles / souls (multi-persona):${N}
   ${G}profile${N} [args]     forward to \`hermes profile …\` (list/create/use/…)
+  ${G}profile workspace${N} [name]   wire a profile's cwd to ./workspace/<name>/
   ${G}soul${N} [profile]     edit SOUL.md (active profile if omitted)
   ${G}soul show${N} [prof]   cat SOUL.md to stdout
   ${G}soul import${N} <f> [prof]   replace SOUL.md from host file
