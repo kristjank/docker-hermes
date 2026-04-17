@@ -60,10 +60,67 @@ maybe_restart_gateway() {
     fi
 }
 
+# Edit a file inside the volume using EDITOR (default: vi).
+# Supported: vi (built-in to alpine), nano (installed on-the-fly ~200KB).
+# Usage: edit_in_volume "/h/config.yaml"
+#        edit_in_volume "/h/profiles/foo/SOUL.md" "mkdir -p /h/profiles/foo"
+edit_in_volume() {
+    local file="$1"
+    local pre="${2:-}"   # optional setup command (e.g. mkdir -p)
+    local editor="${EDITOR:-vi}"
+    local vol
+    vol="$(volume_name)"
+
+    case "$editor" in
+        vi|vim)
+            # vi is built-in to alpine — runs as uid 1000 directly.
+            docker run --rm -it --user 1000:1000 -v "${vol}:/h" alpine \
+                sh -c "${pre:+$pre && }vi ${file}"
+            ;;
+        nano)
+            # nano needs `apk add` (root), so we run as root for the install,
+            # then chown the edited file back to 1000:1000 after exit.
+            docker run --rm -it -v "${vol}:/h" alpine \
+                sh -c "apk add -q nano >/dev/null 2>&1 && ${pre:+$pre && }nano ${file}; chown -R 1000:1000 \$(dirname ${file})"
+            ;;
+        *)
+            die "unsupported EDITOR='${editor}' — use vi or nano (e.g. EDITOR=nano ./hermes edit)"
+            ;;
+    esac
+}
+
 # Point a profile's terminal.cwd at the bind-mounted workspace so generated
 # files (PDFs, reports, downloads) land on the host at ./workspace/<profile>/
 # instead of inside the volume at /h/profiles/<profile>/.
 # Also creates the host-side directory and restarts the gateway if running.
+setup_profile_workspace() {
+    local profile="${1:-$(active_profile_name)}"
+    [ -z "$profile" ] && die "no profile given and no active profile set"
+
+    local container_path="/home/hermes/workspace/${profile}"
+    local config_path
+    if [ "$profile" = "default" ]; then
+        config_path="/h/config.yaml"
+    else
+        config_path="/h/profiles/${profile}/config.yaml"
+    fi
+
+    # Create the host side of the bind mount first.
+    mkdir -p "${SCRIPT_DIR}/workspace/${profile}"
+
+    # Patch terminal.cwd in the profile's config.yaml.
+    docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine sh -c "
+        if [ ! -f ${config_path} ]; then
+            echo 'profile ${profile} has no config.yaml yet — run \`./hermes profile create ${profile} --clone\` or \`./hermes setup\` first' >&2
+            exit 1
+        fi
+        sed -i 's|^  cwd:.*|  cwd: ${container_path}|' ${config_path}
+    " || return 1
+
+    ok "profile '${profile}' → ./workspace/${profile}/ (on host) ↔ ${container_path} (in container)"
+    maybe_restart_gateway
+}
+
 # Sync a profile's "output" directories from the volume to ./workspace/<name>/.
 # Necessary because hermes's higher-level skills (PDF generation, code gen,
 # downloads) write to HERMES_HOME regardless of terminal.cwd. Run on demand.
@@ -114,34 +171,6 @@ pull_profile_outputs() {
         " 2>&1
     ok "pulled → ./workspace/${profile}/"
     ls -la "$host_path" | tail -n +2
-}
-
-setup_profile_workspace() {
-    local profile="${1:-$(active_profile_name)}"
-    [ -z "$profile" ] && die "no profile given and no active profile set"
-
-    local container_path="/home/hermes/workspace/${profile}"
-    local config_path
-    if [ "$profile" = "default" ]; then
-        config_path="/h/config.yaml"
-    else
-        config_path="/h/profiles/${profile}/config.yaml"
-    fi
-
-    # Create the host side of the bind mount first.
-    mkdir -p "${SCRIPT_DIR}/workspace/${profile}"
-
-    # Patch terminal.cwd in the profile's config.yaml.
-    docker run --rm --user 1000:1000 -v "$(volume_name):/h" alpine sh -c "
-        if [ ! -f ${config_path} ]; then
-            echo 'profile ${profile} has no config.yaml yet — run \`./hermes profile create ${profile} --clone\` or \`./hermes setup\` first' >&2
-            exit 1
-        fi
-        sed -i 's|^  cwd:.*|  cwd: ${container_path}|' ${config_path}
-    " || return 1
-
-    ok "profile '${profile}' → ./workspace/${profile}/ (on host) ↔ ${container_path} (in container)"
-    maybe_restart_gateway
 }
 
 # --- preflight ---
@@ -248,26 +277,16 @@ case "$cmd" in
 
     edit)
         # Edit hermes's config.yaml (model, tools, personalities — not keys).
-        # Uses disposable alpine+vi against the volume so we don't depend on
-        # the hermes image having an editor installed.
-        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
-        docker run --rm -it --user 1000:1000 -v "${volume}:/h" alpine sh -c 'vi /h/config.yaml'
-        if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
-            info "restarting gateway to pick up config changes"
-            "${COMPOSE[@]}" restart gateway
-        fi
+        # Respects EDITOR env var (default: vi). E.g. EDITOR=nano ./hermes edit
+        edit_in_volume "/h/config.yaml"
+        maybe_restart_gateway
         ;;
 
     env|keys)
-        # Edit the volume's .env where API keys live. Uses a disposable alpine
-        # container with vi so we don't depend on the hermes image having an
-        # editor. Restarts the gateway afterwards so changes take effect.
-        volume="$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z0-9_-')_hermes-home"
-        docker run --rm -it --user 1000:1000 -v "${volume}:/h" alpine sh -c 'vi /h/.env'
-        if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^gateway$'; then
-            info "restarting gateway to pick up new env values"
-            "${COMPOSE[@]}" restart gateway
-        fi
+        # Edit the volume's .env where API keys live.
+        # Respects EDITOR env var (default: vi). E.g. EDITOR=nano ./hermes env
+        edit_in_volume "/h/.env"
+        maybe_restart_gateway
         ;;
 
     pull)
@@ -345,8 +364,7 @@ case "$cmd" in
             edit|"")
                 profile="${1:-$(active_profile_name)}"
                 path="$(soul_path_in_volume "$profile")"
-                docker run --rm -it --user 1000:1000 -v "$(volume_name):/h" alpine \
-                    sh -c "mkdir -p \$(dirname ${path}) && vi ${path}"
+                edit_in_volume "${path}" "mkdir -p \$(dirname ${path})"
                 maybe_restart_gateway
                 ;;
             show|cat)
@@ -429,8 +447,8 @@ ${B}agent:${N}
   ${G}sessions${N} [N]      list the N most recent sessions (default 15)
   ${G}shell${N}             bash shell inside a one-off container
   ${G}config${N} [args]     run \`hermes config …\` in a one-off container
-  ${G}edit${N}              open config.yaml (model/tools/personalities)
-  ${G}env${N}               edit the volume's .env (API keys, tokens)
+  ${G}edit${N}              open config.yaml (uses \$EDITOR, default: vi)
+  ${G}env${N}               edit the volume's .env (uses \$EDITOR, default: vi)
   ${G}cat-env${N}           list which keys exist (values redacted)
   ${G}setup${N}             run the first-time setup wizard
   ${G}gsetup${N}            run the gateway-specific setup wizard
@@ -440,7 +458,7 @@ ${B}profiles / souls (multi-persona):${N}
   ${G}profile workspace${N} [name]   wire a profile's cwd to ./workspace/<name>/
   ${G}pull${N} [profile]     sync hermes skill outputs (PDFs, reports) to host
                        (same as \`./hermes profile pull [name]\`)
-  ${G}soul${N} [profile]     edit SOUL.md (active profile if omitted)
+  ${G}soul${N} [profile]     edit SOUL.md (uses \$EDITOR, active profile if omitted)
   ${G}soul show${N} [prof]   cat SOUL.md to stdout
   ${G}soul import${N} <f> [prof]   replace SOUL.md from host file
   ${G}soul export${N} <f> [prof]   save SOUL.md to host file
@@ -458,6 +476,9 @@ ${B}image / volume:${N}
   ${G}update${N}            re-clone latest hermes-agent and rebuild
   ${G}clean${N}             remove containers (keep the hermes-home volume)
   ${G}nuke${N}              remove containers AND the volume (destructive)
+
+${B}tip:${N} set ${G}EDITOR=nano${N} to use nano instead of vi for edit/env/soul commands.
+     e.g. ${DIM}EDITOR=nano ./hermes edit${N}   or   ${DIM}export EDITOR=nano${N} (sticky for the shell session)
 
 Run ${DIM}./hermes <command> --help${N} for docker compose's help on a given verb.
 EOF
