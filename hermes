@@ -64,6 +64,58 @@ maybe_restart_gateway() {
 # files (PDFs, reports, downloads) land on the host at ./workspace/<profile>/
 # instead of inside the volume at /h/profiles/<profile>/.
 # Also creates the host-side directory and restarts the gateway if running.
+# Sync a profile's "output" directories from the volume to ./workspace/<name>/.
+# Necessary because hermes's higher-level skills (PDF generation, code gen,
+# downloads) write to HERMES_HOME regardless of terminal.cwd. Run on demand.
+#
+# What gets pulled: every top-level file/dir under the profile's HERMES_HOME
+# that isn't in the system-dir blacklist (config, keys, skills, memory,
+# sessions, cache, logs, etc.).
+pull_profile_outputs() {
+    local profile="${1:-$(active_profile_name)}"
+    [ -z "$profile" ] && die "no profile given and no active profile set"
+
+    local volume_path
+    if [ "$profile" = "default" ]; then
+        volume_path="/h"
+    else
+        volume_path="/h/profiles/${profile}"
+    fi
+
+    local host_path="${SCRIPT_DIR}/workspace/${profile}"
+    mkdir -p "$host_path"
+
+    # System dirs/files hermes manages — do NOT pull these to host.
+    local excludes=(
+        ".env" "config.yaml" "SOUL.md" ".hermes_history" ".update_check"
+        ".clean_shutdown" ".skills_prompt_snapshot.json" "auth.json" "auth.lock"
+        "active_profile" "channel_directory.json" "gateway_state.json" "gateway.pid"
+        "models_dev_cache.json" "state.db" "state.db-shm" "state.db-wal"
+        "sessions" "memories" "skills" "cron" "logs" "cache" "platforms"
+        "bin" "home" "plans" "skins" "profiles" "workspace"
+    )
+    local rsync_excludes=""
+    for e in "${excludes[@]}"; do
+        rsync_excludes="${rsync_excludes} --exclude=${e}"
+    done
+
+    info "pulling outputs from ${volume_path} → ${host_path}"
+    docker run --rm --user 1000:1000 \
+        -v "$(volume_name):/h:ro" \
+        -v "${host_path}:/dst" alpine sh -c "
+            apk add -q rsync >/dev/null 2>&1 || true
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a ${rsync_excludes} ${volume_path}/ /dst/
+            else
+                # Fallback without rsync — cp everything then rm the excludes
+                cp -rn ${volume_path}/. /dst/ 2>/dev/null || true
+                for e in ${excludes[*]}; do rm -rf /dst/\$e 2>/dev/null; done
+            fi
+        " 2>&1
+    ok "pulled → ./workspace/${profile}/"
+    ls -la "$host_path" | tail -n +2
+}
+
 setup_profile_workspace() {
     local profile="${1:-$(active_profile_name)}"
     [ -z "$profile" ] && die "no profile given and no active profile set"
@@ -218,6 +270,14 @@ case "$cmd" in
         fi
         ;;
 
+    pull)
+        # Top-level shortcut for `./hermes profile pull [name]`. Syncs hermes
+        # skill outputs (PDFs, reports, etc.) from the volume to the host's
+        # ./workspace/<profile>/ dir. Run after the agent generates files.
+        pull_profile_outputs "${1:-}"
+        exit 0
+        ;;
+
     cat-env|show-env)
         # Print the volume's .env with values redacted — useful for verifying
         # which keys exist without leaking values to a transcript.
@@ -241,10 +301,19 @@ case "$cmd" in
         fi
         # `profile workspace [name]` — local extension: wires a profile's
         # terminal.cwd to the host-bound ./workspace/<name>/ directory so
-        # generated files (PDFs, reports, downloads) land on the host.
+        # shell-generated files land on the host.
         if [ "${1:-}" = "workspace" ]; then
             shift
             setup_profile_workspace "${1:-}"
+            exit 0
+        fi
+        # `profile pull [name]` — copy hermes-skill outputs (PDFs, reports,
+        # downloads) from the volume's profile dir to ./workspace/<name>/.
+        # Needed because skills write to HERMES_HOME regardless of
+        # terminal.cwd. Safe to re-run; excludes all system state.
+        if [ "${1:-}" = "pull" ]; then
+            shift
+            pull_profile_outputs "${1:-}"
             exit 0
         fi
         # `profile create <name>` — after hermes finishes creating the profile,
@@ -369,6 +438,8 @@ ${B}agent:${N}
 ${B}profiles / souls (multi-persona):${N}
   ${G}profile${N} [args]     forward to \`hermes profile …\` (list/create/use/…)
   ${G}profile workspace${N} [name]   wire a profile's cwd to ./workspace/<name>/
+  ${G}pull${N} [profile]     sync hermes skill outputs (PDFs, reports) to host
+                       (same as \`./hermes profile pull [name]\`)
   ${G}soul${N} [profile]     edit SOUL.md (active profile if omitted)
   ${G}soul show${N} [prof]   cat SOUL.md to stdout
   ${G}soul import${N} <f> [prof]   replace SOUL.md from host file
